@@ -31,6 +31,8 @@ public class EEGDataHandler extends Thread {
     int num_runs;
     int num_samples;
 
+    EEGSample sample_prev;
+
     /*
             TODO:   Check if algorithmus can follow sample rate
                     Remove imaginary part from FFT (y)
@@ -83,8 +85,8 @@ public class EEGDataHandler extends Thread {
                 if(doWelchMethod(sample))
                 {
                     Log.d("MODEBUG",num_runs + ". PSD calculated." );
-                    //mHandler.obtainMessage(PSD, psd).sendToTarget();
-                    mHandler.obtainMessage(NUM_UPDATE, num_runs).sendToTarget();
+                    mHandler.obtainMessage(PSD, psd).sendToTarget();
+                    //mHandler.obtainMessage(NUM_UPDATE, num_runs).sendToTarget();
 
                     num_runs++;
                 }
@@ -110,6 +112,24 @@ public class EEGDataHandler extends Thread {
 
     private boolean doWelchMethod(EEGSample sample)
     {
+        //Check if sample got lost on the way and interpolate if so
+        if(sample_prev != null && sample_prev.getSampleNumber() + 1 != sample.getSampleNumber() && sample_prev.getSampleNumber() != 255)
+        {
+            Log.d("MODEBUG", "Sample Missing: " + (sample_prev.getSampleNumber() + 1) + " Interpolating..");
+
+            doWelchMethod(EEGSample.interpolate(sample_prev, sample));
+
+        }
+
+        sample_prev = sample;
+
+        //Add new sample to seq Array
+        for(int j = 0; j < 8; j++)
+        {
+            seq[j][num_samples + (int) (sequence_length * overlapping) - 1] = sample.getEEGVoltage(j);
+        }
+        num_samples++;
+
         //Collect new samples till new_samples is reached, then process them via Welch
         if(num_samples == new_samples)
         {
@@ -152,12 +172,6 @@ public class EEGDataHandler extends Thread {
         }
         else
         {
-            for(int j = 0; j < 8; j++)
-            {
-                seq[j][num_samples + (int) (sequence_length * overlapping) - 1] = sample.getEEGVoltage(j);
-            }
-
-            num_samples++;
             return false;
         }
     }

@@ -1,5 +1,4 @@
 package htwg.compsognathus.eegsensorsysteme;
-
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
@@ -15,18 +14,18 @@ import android.os.IBinder;
 import android.util.Log;
 
 import com.felhr.usbserial.CDCSerialDevice;
+import com.felhr.usbserial.SerialInputStream;
+import com.felhr.usbserial.SerialOutputStream;
 import com.felhr.usbserial.UsbSerialDevice;
 import com.felhr.usbserial.UsbSerialInterface;
-import com.felhr.utils.ProtocolBuffer;
 
-import java.io.UnsupportedEncodingException;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-public class UsbService extends Service {
+public class UsbServiceOLDSynchron extends Service {
 
     public static final String TAG = "UsbService";
 
@@ -59,185 +58,16 @@ public class UsbService extends Service {
 
     private boolean serialPortConnected;
 
+    private SerialInputStream serialInputStream;
+    private SerialOutputStream serialOutputStream;
 
+    private ReadThread readThread;
 
-    int num_received;
-    long start_time;
-    long stop_time;
-
-    boolean streaming_data;
-    boolean stop_clicked;
-
-    BlockingQueue<EEGSample> eeg_samples;
-
-    byte[] data;
-    byte[] rest;
-    int index;
-
-    private final int STOP = 0xC0;
-    private final int START = 0xA0;
-
-    private UsbSerialInterface.UsbReadCallback mCallback = new UsbSerialInterface.UsbReadCallback() {
-
-        @Override
-        public void onReceivedData(byte[] arg0)
-        {
-            Log.d("MODEUG", "onReceivedData: " + arg0.length);
-
-            if(streaming_data)
-            {
-                //Fill rest of array from last time
-                if(index > 0)
-                {
-                    for(int i = index; i < 33; i++)
-                    {
-                        rest[i] = arg0[i-index];
-                    }
-                    if(rest[0] == (byte)START && rest[32] == (byte)STOP)
-                    {
-                        System.arraycopy(rest, 1, data, 0, 31);
-                        eeg_samples.add(EEGSample.create(data));
-                    }
-                    else
-                    {
-                        Log.d("MODEBUG", "stitched sample discarded");
-                    }
-                }
-
-                for(int i = 32 + (32-index); i < arg0.length; i++)
-                {
-                    index++;
-                    if(arg0[i] == (byte)STOP && arg0[i-32] == (byte)START)
-                    {
-                        System.arraycopy(arg0, i-31, data, 0, 31);
-                        eeg_samples.add(EEGSample.create(data));
-                        //Log.d("Modebug", "added sample: " + num_received);
-                        num_received++;
-                        index = 0;
-                    }
-                }
-
-                //Copy incomplete package to data array
-                if(index > 0)
-                {
-                    Log.d("MODEBUG", "package incomplete, index: " + index);
-                    System.arraycopy(arg0, arg0.length-index, rest, 0, index);
-                }
-            }
-            else
-            {
-                String s = new String(arg0, StandardCharsets.UTF_8);
-                mHandler.obtainMessage(SYNC_READ, s).sendToTarget();
-            }
-            /*Log.d("MODEUG", "received data: " + arg0.length);
-            buffer.appendData(arg0);
-            while(buffer.hasMoreCommands()){
-                byte[] data = buffer.nextBinaryCommand();
-                //Log.d("MODEBUG", "data length: " + data.length + " num_received: " + num_received);
-                num_received++;
-            }*/
-
-            if(stop_clicked)
-            {
-                streaming_data = false;
-                stop_clicked = false;
-                index = 0;
-            }
-        }
-
-    };
-
-    /*
-     * This function will be called from MainActivity to write data through Serial Port
-     */
-    public void write(byte[] data)
-    {
-        if (serialPort != null)
-        {
-            serialPort.write(data);
-
-            //Stop streaming data
-            if(data[0] == 's')
-            {
-                stop_clicked = true;
-                stop_time = System.currentTimeMillis();
-            }
-            //Start streaming data
-            else if (data[0] == 'b')
-            {
-                num_received = 0;
-                streaming_data = true;
-                start_time = System.currentTimeMillis();
-            }
-
-        }
-    }
-
-    public synchronized int getNumReceived()
-    {
-        return num_received;
-    }
     public synchronized double getReceivingFrequency()
     {
-        //Log.d("MODEBUG", "FREQ n: " + num_received + " stop_time: " + stop_time + " start_time: " +start_time );
-        return (1000.0 * num_received/(stop_time-start_time));
+        return readThread.getReceivingFrequency();
     }
 
-    /*
-     * onCreate will be executed when service is started. It configures an IntentFilter to listen for
-     * incoming Intents (USB ATTACHED, USB DETACHED...) and it tries to open a serial port.
-     */
-    @Override
-    public void onCreate() {
-        this.context = this;
-        serialPortConnected = false;
-        UsbService.SERVICE_CONNECTED = true;
-
-
-        setFilter();
-        usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
-        findSerialPortDevice();
-
-        eeg_samples = new ArrayBlockingQueue<EEGSample>(1000);
-
-
-        //buffer = new ProtocolBuffer(ProtocolBuffer.BINARY); //Also Binary
-        //buffer.setDelimiter(new byte[]{(byte)0xC0,(byte)0xA0});
-        data = new byte[31];
-        rest = new byte[33];
-    }
-
-
-    private static String toASCII(int value) {
-        int length = 4;
-        StringBuilder builder = new StringBuilder(length);
-        for (int i = length - 1; i >= 0; i--) {
-            builder.append((char) ((value >> (8 * i)) & 0xFF));
-        }
-        return builder.toString();
-    }
-
-    /*
-     * State changes in the CTS line will be received here
-     */
-    private UsbSerialInterface.UsbCTSCallback ctsCallback = new UsbSerialInterface.UsbCTSCallback() {
-        @Override
-        public void onCTSChanged(boolean state) {
-            if(mHandler != null)
-                mHandler.obtainMessage(CTS_CHANGE).sendToTarget();
-        }
-    };
-
-    /*
-     * State changes in the DSR line will be received here
-     */
-    private UsbSerialInterface.UsbDSRCallback dsrCallback = new UsbSerialInterface.UsbDSRCallback() {
-        @Override
-        public void onDSRChanged(boolean state) {
-            if(mHandler != null)
-                mHandler.obtainMessage(DSR_CHANGE).sendToTarget();
-        }
-    };
     /*
      * Different notifications from OS will be received here (USB attached, detached, permission responses...)
      * About BroadcastReceiver: http://developer.android.com/reference/android/content/BroadcastReceiver.html
@@ -266,14 +96,27 @@ public class UsbService extends Service {
                 Intent intent = new Intent(ACTION_USB_DISCONNECTED);
                 arg0.sendBroadcast(intent);
                 if (serialPortConnected) {
-                    serialPort.close();
+                    serialPort.syncClose();
+                    readThread.setKeep(false);
                 }
                 serialPortConnected = false;
             }
         }
     };
 
-
+    /*
+     * onCreate will be executed when service is started. It configures an IntentFilter to listen for
+     * incoming Intents (USB ATTACHED, USB DETACHED...) and it tries to open a serial port.
+     */
+    @Override
+    public void onCreate() {
+        this.context = this;
+        serialPortConnected = false;
+        UsbServiceOLDSynchron.SERVICE_CONNECTED = true;
+        setFilter();
+        usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
+        findSerialPortDevice();
+    }
 
     /* MUST READ about services
      * http://developer.android.com/guide/components/services.html
@@ -294,17 +137,28 @@ public class UsbService extends Service {
         super.onDestroy();
         serialPort.close();
         unregisterReceiver(usbReceiver);
-        UsbService.SERVICE_CONNECTED = false;
+        UsbServiceOLDSynchron.SERVICE_CONNECTED = false;
     }
 
+    /*
+     * This function will be called from MainActivity to write data through Serial Port
+     */
+    public void write(byte[] data) {
+        if (serialOutputStream != null)
+            serialOutputStream.write(data);
+    }
 
-    public void setHandler(Handler mHandler)
-    {
+    /*
+     * This function will be called from MainActivity to change baud rate
+     */
+
+    public void changeBaudRate(int baudRate){
+        if(serialPort != null)
+            serialPort.setBaudRate(baudRate);
+    }
+
+    public void setHandler(Handler mHandler) {
         this.mHandler = mHandler;
-
-        EEGDataHandler eeghandler = new EEGDataHandler(eeg_samples, mHandler);
-        eeghandler.setPriority(Thread.MAX_PRIORITY-1);
-        eeghandler.start();
     }
 
     private void findSerialPortDevice() {
@@ -312,7 +166,7 @@ public class UsbService extends Service {
         HashMap<String, UsbDevice> usbDevices = usbManager.getDeviceList();
         if (!usbDevices.isEmpty()) {
 
-            // first, dump the hashmap for diagnostic purposes
+            // first, dump the map for diagnostic purposes
             for (Map.Entry<String, UsbDevice> entry : usbDevices.entrySet()) {
                 device = entry.getValue();
                 Log.d(TAG, String.format("USBDevice.HashMap (vid:pid) (%X:%X)-%b class:%X:%X name:%s",
@@ -327,9 +181,9 @@ public class UsbService extends Service {
                 int deviceVID = device.getVendorId();
                 int devicePID = device.getProductId();
 
-//                if (deviceVID != 0x1d6b && (devicePID != 0x0001 && devicePID != 0x0002 && devicePID != 0x0003) && deviceVID != 0x5c6 && devicePID != 0x904c) {
+//                if (deviceVID != 0x1d6b && (devicePID != 0x0001 && devicePID != 0x0002 && devicePID != 0x0003)) {
                 if (UsbSerialDevice.isSupported(device)) {
-                    // There is a supported device connected - request permission to access it.
+                    // There is a device connected to our Android device. Try to open it as a Serial Port.
                     requestUserPermission();
                     break;
                 } else {
@@ -368,8 +222,8 @@ public class UsbService extends Service {
     }
 
     public class UsbBinder extends Binder {
-        public UsbService getService() {
-            return UsbService.this;
+        public UsbServiceOLDSynchron getService() {
+            return UsbServiceOLDSynchron.this;
         }
     }
 
@@ -378,13 +232,15 @@ public class UsbService extends Service {
      * Although it should be a fast operation. moving usb operations away from UI thread is a good thing.
      */
     private class ConnectionThread extends Thread {
+
+
         @Override
         public void run() {
             serialPort = UsbSerialDevice.createUsbSerialDevice(device, connection);
             if (serialPort != null) {
-                if (serialPort.open()) {
+                if (serialPort.syncOpen()) {
                     serialPortConnected = true;
-                    serialPort.setBaudRate(BAUD_RATE);
+                    serialPort.setBaudRate(921600);
                     serialPort.setDataBits(UsbSerialInterface.DATA_BITS_8);
                     serialPort.setStopBits(UsbSerialInterface.STOP_BITS_1);
                     serialPort.setParity(UsbSerialInterface.PARITY_NONE);
@@ -395,9 +251,16 @@ public class UsbService extends Service {
                      * UsbSerialInterface.FLOW_CONTROL_DSR_DTR only for CP2102 and FT232
                      */
                     serialPort.setFlowControl(UsbSerialInterface.FLOW_CONTROL_OFF);
-                    serialPort.read(mCallback);
-                    serialPort.getCTS(ctsCallback);
-                    serialPort.getDSR(dsrCallback);
+
+                    /**
+                     * InputStream and OutputStream will be null if you are using async api.
+                     */
+                    serialInputStream = serialPort.getInputStream();
+                    serialOutputStream = serialPort.getOutputStream();
+
+                    readThread = new ReadThread();
+                    readThread.setPriority(MAX_PRIORITY);
+                    readThread.start();
 
                     //
                     // Some Arduinos would need some sleep because firmware wait some time to know whether a new sketch is going
@@ -423,6 +286,117 @@ public class UsbService extends Service {
                 Intent intent = new Intent(ACTION_USB_NOT_SUPPORTED);
                 context.sendBroadcast(intent);
             }
+        }
+    }
+
+    private static String toASCII(int value) {
+        int length = 4;
+        StringBuilder builder = new StringBuilder(length);
+        for (int i = length - 1; i >= 0; i--) {
+            builder.append((char) ((value >> (8 * i)) & 0xFF));
+        }
+        return builder.toString();
+    }
+
+
+
+
+
+    private class ReadThread extends Thread {
+
+        private int errors;
+        private int successes;
+        private final int STOP = 0xC0;
+        private final int START = 0xA0;
+
+        long start_time = 0;
+        int num_recieved;
+
+        int samples_lost;
+        byte sample_nr;
+
+        private AtomicBoolean keep = new AtomicBoolean(true);
+
+        public ReadThread()
+        {
+        }
+
+        public synchronized double getReceivingFrequency()
+        {
+            return (1000.0 * num_recieved/(System.currentTimeMillis()-start_time));
+        }
+
+        @Override
+        public void run()
+        {
+            BlockingQueue<EEGSample> eeg_samples = new ArrayBlockingQueue<EEGSample>(1000);
+
+            EEGDataHandler handler = new EEGDataHandler(eeg_samples, mHandler);
+            handler.setPriority(MAX_PRIORITY-1);
+            handler.start();
+
+            byte[] data = new byte[32];
+
+            while(keep.get())
+            {
+                if(serialInputStream == null) return;
+
+                int value = serialInputStream.read();
+
+                if(value != -1)
+                {
+                    //Receive eeg data
+                    if(value == START)
+                    {
+                        if(start_time == 0)
+                        {
+                            start_time = System.currentTimeMillis();
+                        }
+
+                        for(int i = 0; i < 32; i++)
+                        {
+                            data[i] = (byte) serialInputStream.read();
+                        }
+
+                        if(data[31] == (byte)STOP)
+                        {
+                            eeg_samples.add(EEGSample.create(data));
+                            num_recieved++;
+
+                            if(data[0] != sample_nr+1 && data[0] != -128)
+                            {
+                                samples_lost++;
+                                Log.d("MODEBUG", "Lost: " + samples_lost + " actual index: " + data[0] + " should be: " + (sample_nr + 1));
+                            }
+                            sample_nr = data[0];
+                        }
+                        else
+                        {
+                            Log.d("MODEBUG", "sample discarded.");
+                        }
+
+                        //Log.d("MODEBUG", "Sample " + num_recieved + "took: " + (System.nanoTime() - start_time) + "ns");
+                        //Log.d("MODEBUG", "Samples: " + num_recieved + " Sample receiving frequency: " + (1000.0 * num_recieved/(System.currentTimeMillis()-start_time)));
+                        //Log.d("MDEBU", "sucesses: " + successes + " errors: " + errors + " STOP: " + data[31]);
+                    }
+                    else
+                    {
+                        mHandler.obtainMessage(SYNC_READ, toASCII(value)).sendToTarget();
+                    }
+                }
+
+                /*if(value != -1) {
+                    //String str = toASCII(value);
+                    mHandler.obtainMessage(SYNC_READ, value + " ").sendToTarget();
+                    //Log.d("MODEBUG", str);
+                }*/
+            }
+
+        }
+
+
+        public void setKeep(boolean keep){
+            this.keep.set(keep);
         }
     }
 }

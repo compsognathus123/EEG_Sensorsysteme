@@ -51,4 +51,16 @@ public class EEGSample {
         return new EEGSample(serial_data[0], eeg_values);
     }
 
+    public static EEGSample interpolate(EEGSample s1, EEGSample s2)
+    {
+        int eeg_values_new[] = new int[8];
+
+        for(int i = 0; i < eeg_values_new.length; i++)
+        {
+            eeg_values_new[i] = (s1.getEEGValues()[i] + s2.getEEGValues()[i]) / 2;
+        }
+
+        return new EEGSample(s1.getSampleNumber()+1, eeg_values_new);
+    }
+
 }

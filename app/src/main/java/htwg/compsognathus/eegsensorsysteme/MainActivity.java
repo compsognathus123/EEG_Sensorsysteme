@@ -35,7 +35,7 @@ public class MainActivity extends AppCompatActivity {
     GraphView graph_view;
     EEGGraph graph;
 
-    public static boolean streaming_data = false;
+    public boolean streaming_data = false;
     /*
      * Notifications from UsbService will be received here.
      */
@@ -62,7 +62,7 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
-    public static boolean isStreaming_data()
+    public boolean isStreaming_data()
     {
         return streaming_data;
     }
@@ -142,12 +142,15 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v)
             {
-                double freq = usbService.getReceivingFrequency();
                 usbService.write(new byte[]{(byte) 's'});
+
+                double freq = usbService.getReceivingFrequency();
+                int num_received = usbService.getNumReceived();
                 streaming_data = false;
 
                 Log.d("MODEBUG", "Send s, stop data stream.");
                 Log.d("MODEBUG", "Average recesving freqency: " + freq );
+                Log.d("MODEBUG", "Received samples: " + num_received );
             }
         });
 
